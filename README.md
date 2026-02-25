@@ -2,6 +2,8 @@
 
 An addon for Blender 5.0.0 to import and export the .msh, .bn (.bbx goes together) and .ani files for RF Online. The entity (R3E) and map (BSP) formats are import only. Import operations also work with drag and drop.
 
+Tested on Windows 10 and Linux Mint 22.3.
+
 There is code for exporting the BSP format inside the addon code but it is deactivated due to being incomplete. It only reaches so far as actually exporting walkable map geometry (with the BSP structure also built) and baking+exporting the light maps. Unfortunately, Blender proved to not be very suitable for the task of actually being a complete map editor for RF Online, mostly due to complexity issues with the .SPT particle format and other desirable features that would be hard to implement into it, such as mob spawn areas and portals. The R3M materials are also quite hard to simulate, since the original engine rendered the same mesh multiple times for each texture layer they had.
 It is possible to reactivate the feature by manually uncommenting the three commented lines in the bsp.py's menu_func_export, register and unregister functions. Expect no support for this feature, as the more proper solution would be writing a proper dedicated software.
 

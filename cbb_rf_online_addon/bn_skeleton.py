@@ -1,6 +1,5 @@
 import bpy
 import struct
-import ntpath
 import traceback
 import mathutils
 from bpy_extras.io_utils import ImportHelper, ExportHelper

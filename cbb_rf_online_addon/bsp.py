@@ -598,7 +598,10 @@ class ImportBSP(Operator, ImportHelper):
                 
                 print("BSP file read!")
                 
-                ebp_filepath = os.path.join(self.directory, f"{file_stem}.ebp")
+                ebp_filepath = Utils.find_file_icase(self.directory, f"{file_stem}.ebp")
+                if ebp_filepath is None:
+                    self.report({"ERROR"}, f"EBP file not found (case-insensitive) in: {self.directory} for stem: {file_stem}")
+                    return {"CANCELLED"}
                 
                 with open(ebp_filepath, 'rb') as ebp_file:
                     reader = Utils.Serializer(ebp_file, Utils.Serializer.Endianness.Little, Utils.Serializer.Quaternion_Order.XYZW, Utils.Serializer.Matrix_Order.ColumnMajor, co_conv_unity_blender)
@@ -736,27 +739,40 @@ class ImportBSP(Operator, ImportHelper):
                     entities_list = [EntityStruct(reader.read_ubyte(), reader.read_ubyte(), reader.read_fixed_string(62, "euc-kr").casefold(), reader.read_float(), reader.read_float(), reader.read_ushort(), reader.read_ushort(), reader.read_values("2f", 8)) for _ in range(EntityList_size // 84)]
                     
                     
-                    entities_file_paths = [read_entity.file_path for read_entity in entities_list]
+                    entities_file_paths = [read_entity.file_path.replace("\\", "/").lstrip("/") for read_entity in entities_list]
                     
                     
                     parent_directory = os.path.dirname(self.directory)
-                    
-                    while parent_directory != "":
+
+                    # Walk up to find the 'map' parent folder, case-insensitive
+                    FS_ROOT = os.path.abspath(os.sep)
+                    while True:
                         parent_directory = os.path.dirname(parent_directory)
+                        if os.path.normpath(parent_directory) == FS_ROOT:
+                            parent_directory = ""
+                            break
                         if os.path.basename(parent_directory).casefold() == "map":
                             break
 
                     rpk_filepaths = []
-                    
-                    
-                    entity_directory = os.path.join(parent_directory, "entity")
-                    
-                    if os.path.isdir(entity_directory):
-                        rpk_filepaths = [
-                            os.path.join(entity_directory, file)
-                            for file in os.listdir(entity_directory)
-                            if file.casefold().endswith(".rpk")
-                        ]
+
+                    # Find the 'entity' sibling folder case-insensitively
+                    if parent_directory:
+                        entity_directory = None
+                        try:
+                            for entry in os.scandir(parent_directory):
+                                if entry.is_dir() and entry.name.casefold() == "entity":
+                                    entity_directory = entry.path
+                                    break
+                        except OSError:
+                            pass
+
+                        if entity_directory and os.path.isdir(entity_directory):
+                            rpk_filepaths = [
+                                os.path.join(entity_directory, file)
+                                for file in os.listdir(entity_directory)
+                                if file.casefold().endswith(".rpk")
+                            ]
                     
                     instantiated_entities = [None]*len(entities_list)
                     
@@ -780,7 +796,7 @@ class ImportBSP(Operator, ImportHelper):
                             entries_offset_indices_index = []
                             
                             for i in range (rpk_file_amount):
-                                entries_name.append(rpk_reader.read_fixed_string(52, "euc-kr").lstrip(f"."))
+                                entries_name.append(rpk_reader.read_fixed_string(52, "euc-kr").lstrip(".").replace("\\", "/").lstrip("/"))
                                 entries_file_size.append(rpk_reader.read_int())
                                 # Skip name length, not used
                                 rpk_file.seek(2, 1)
@@ -819,7 +835,7 @@ class ImportBSP(Operator, ImportHelper):
                                                 
                                         entity_data["entity_size_in_rpk"] = entry_file_size+next_valid_offset
                                     
-                                    entity_relative_path = os.path.join(f"\\".join(paths), (f"\\{entry_name}")).casefold().replace(f"\\\\", f"\\")
+                                    entity_relative_path = ("/".join(p for p in paths if p) + f"/{entry_name}").casefold()
                                     #print(f"Entity Relative Path: {entity_relative_path}")
                                     entity_database[entity_relative_path] = entity_data
                                     file_structure_stack[-1] = (file_structure_stack[-1][0], file_structure_stack[-1][1]-1)
@@ -846,8 +862,8 @@ class ImportBSP(Operator, ImportHelper):
                         spt_data = None
                         spt_lines = None
                         r3e_path = entity_file_path
-                        entity_name = os.path.basename(entity_file_path)
-                        if entity_file_path.endswith(".spt"):
+                        entity_name = entity_file_path.rsplit("/", 1)[-1]
+                        if entity_file_path.casefold().endswith(".spt"):
                             if self.import_spt_entities == False:
                                 continue
                             
@@ -861,9 +877,9 @@ class ImportBSP(Operator, ImportHelper):
                                         #print(f"Line in spt_data for entity {entity_name}: {line}")
                                         line = line.strip()
                                         split_line = line.split()
-                                        if len(split_line) > 0 and split_line[0] == "entity_file":
+                                        if len(split_line) > 0 and split_line[0].casefold() == "entity_file":
                                             #print(f"Found raw path to r3e entity for SPT: {split_line[1]}")
-                                            r3e_path = split_line[1].casefold().removeprefix(f".\\map\\entity")
+                                            r3e_path = split_line[1].replace("\\", "/").casefold().removeprefix("./map/entity").lstrip("/")
                         
                         r3m_path = f"{os.path.splitext(r3e_path)[0]}.r3m"
                         r3t_path = f"{os.path.splitext(r3e_path)[0]}.r3t"

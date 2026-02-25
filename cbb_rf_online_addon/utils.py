@@ -4,7 +4,7 @@ import encodings.utf_16
 import codecs
 import bpy
 import struct
-import ntpath
+
 import traceback
 import mathutils
 from bpy_extras.io_utils import ImportHelper
@@ -700,13 +700,28 @@ class Utils(Operator):
     def read_xml_file(msg_handler: Utils.MessageHandler, file_path: str | Path, exception_string: str) -> ET.Element:
         file_path = str(file_path)
         try:
-            tree = ET.parse(str(file_path).casefold())
+            tree = ET.parse(str(file_path))
             root: ET.Element = tree.getroot()
             return root
         except Exception as e:
             msg_handler.report('ERROR', f"{exception_string}: {e}")
         return
     
+
+    @staticmethod
+    def find_file_icase(directory: str, target_filename: str) -> str | None:
+        """
+        Find a file in `directory` whose name matches `target_filename`
+        case-insensitively. Returns the actual on-disk path, or None.
+        """
+        target_lower = target_filename.casefold()
+        try:
+            for entry in os.scandir(directory):
+                if entry.is_file() and entry.name.casefold() == target_lower:
+                    return entry.path
+        except OSError:
+            pass
+        return None
 
     @staticmethod
     def debug_print(should_print, debug_string):

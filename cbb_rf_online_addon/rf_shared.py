@@ -44,7 +44,9 @@ class RFShared(Operator):
         """
         Returns a R3MMaterial collection with all the materials in the R3M file, given a directory and a file name to search for.
         """
-        r3m_filepath = os.path.join(directory, file_name_stem + ".r3m")
+        r3m_filepath = Utils.find_file_icase(directory, file_name_stem + ".r3m")
+        if r3m_filepath is None:
+            raise FileNotFoundError(f"R3M file not found (case-insensitive) in: {directory} for stem: {file_name_stem}")
         try:
             with open(r3m_filepath, 'rb') as r3m_file:
                 return RFShared.get_materials_from_r3m_filestream(r3m_file)
@@ -85,7 +87,9 @@ class RFShared(Operator):
     
     @staticmethod
     def get_color_texture_dictionary_from_r3t_file(directory, file_name_stem) -> dict[int, str]:
-        r3t_filepath = os.path.join(directory, file_name_stem + ".r3t")
+        r3t_filepath = Utils.find_file_icase(directory, file_name_stem + ".r3t")
+        if r3t_filepath is None:
+            raise FileNotFoundError(f"R3T file not found (case-insensitive) in: {directory} for stem: {file_name_stem}")
         try:
             with open(r3t_filepath, 'rb') as r3t_file:
                 return RFShared.get_color_texture_dictionary_from_r3t_filestream(r3t_file)
@@ -143,7 +147,9 @@ class RFShared(Operator):
             
     @staticmethod
     def get_light_texture_dictionary_from_r3t_file(directory, file_name_stem) -> dict[int, str]:
-        r3t_filepath = os.path.join(directory, f"{file_name_stem}Lgt.r3t")
+        r3t_filepath = Utils.find_file_icase(directory, f"{file_name_stem}Lgt.r3t")
+        if r3t_filepath is None:
+            raise FileNotFoundError(f"R3T light file not found (case-insensitive) in: {directory} for stem: {file_name_stem}Lgt")
         try:
             with open(r3t_filepath, 'rb') as r3t_file:
                 return RFShared.get_light_texture_dictionary_from_r3t_filestream(r3t_file)

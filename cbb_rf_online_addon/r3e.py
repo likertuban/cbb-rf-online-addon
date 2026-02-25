@@ -1,6 +1,5 @@
 import bpy
 import struct
-import ntpath
 import traceback
 import mathutils
 from PIL import Image

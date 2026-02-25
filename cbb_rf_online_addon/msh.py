@@ -57,18 +57,45 @@ class CBB_OT_ImportMSH(Operator, ImportHelper):
     EXTRACTION_FOLDER = "cbb_extract"
     WEIGHT_TOLERANCE = 1e-05
     @staticmethod
+    def find_child_dir_icase(parent: str, target_name: str):
+        """
+        Find a direct child directory of `parent` whose name matches `target_name`
+        case-insensitively. Returns the actual on-disk path (original casing), or None.
+        """
+        target_lower = target_name.casefold()
+        try:
+            for entry in os.scandir(parent):
+                if entry.is_dir() and entry.name.casefold() == target_lower:
+                    return entry.path
+        except OSError:
+            pass
+        return None
+
+    @staticmethod
     def find_target_directory(start_path, target_dir, max_levels):
-        if start_path == "":
+        """
+        Walk up from start_path up to max_levels, looking for target_dir
+        (a sequence of folder name strings) using case-insensitive segment matching.
+        Returns the actual on-disk path, or None.
+        """
+        if not start_path:
             return ""
-        
+
         current_path = start_path
         for _ in range(max_levels):
             current_path = os.path.abspath(os.path.join(current_path, os.pardir))
-            if os.path.exists(os.path.join(current_path, *target_dir)):
-                return os.path.join(current_path, *target_dir)
-            
+            # Walk down each segment of target_dir case-insensitively
+            resolved = current_path
+            for segment in target_dir:
+                found = CBB_OT_ImportMSH.find_child_dir_icase(resolved, segment)
+                if found is None:
+                    resolved = None
+                    break
+                resolved = found
+            if resolved is not None:
+                return resolved
         return None
-    
+
     def find_texture_in_directory(target_directory, mesh_name, possible_extensions=[".png", ".jpg", ".jpeg", ".bmp", ".tga", ".dds"]):
         for root, dirs, files in os.walk(target_directory):
             for file in files:
@@ -107,7 +134,7 @@ class CBB_OT_ImportMSH(Operator, ImportHelper):
             if existing_image.filepath:
                 try:
                     abs_path = bpy.path.abspath(existing_image.filepath)
-                    if abs_path.lower().endswith('.dds'):
+                    if abs_path.casefold().endswith('.dds'):
                         alpha_analysis = texture_utils.analyze_dds_alpha(abs_path)
                         return existing_image, alpha_analysis
                 except:
@@ -125,7 +152,10 @@ class CBB_OT_ImportMSH(Operator, ImportHelper):
         # Normalize mesh file path
         mesh_file_path = os.path.normpath(mesh_file_path)
 
-        # Traverse up to max_levels to find the "mesh" directory
+        # Filesystem root — used to detect when traversal has gone too far
+        FS_ROOT = os.path.abspath(os.sep)
+
+        # Traverse up to max_levels to find the "mesh" directory (case-insensitive)
         for _ in range(max_levels):
             if os.path.basename(mesh_file_path).casefold() == "mesh":
                 break
@@ -134,15 +164,21 @@ class CBB_OT_ImportMSH(Operator, ImportHelper):
                 break
             mesh_file_path = parent_path
 
+        # Guard: if we ended up at the filesystem root, don't search from there
+        if os.path.normpath(mesh_file_path) == FS_ROOT:
+            print(f"    Cannot locate 'mesh' parent directory; search stopped at filesystem root.")
+            return None, None
+
         target_filename_stem = os.path.splitext(texture_name)[0]
         target_filename_stem_lower = target_filename_stem.casefold()
-        
-        # Determine textures folder path
-        textures_folder = os.path.normpath(os.path.join(mesh_file_path, "../Tex/"))
-        if not os.path.exists(textures_folder):
-            self.report({"INFO"}, f"Textures folder does not exist: {textures_folder}")
 
-        if os.path.exists(textures_folder) :
+        # Locate the sibling Tex folder using case-insensitive lookup
+        parent_dir = os.path.dirname(mesh_file_path)
+        textures_folder = CBB_OT_ImportMSH.find_child_dir_icase(parent_dir, "Tex")
+        if textures_folder is None:
+            self.report({"INFO"}, f"Textures folder not found near: {parent_dir}")
+
+        if textures_folder is not None:
             # Search for loose .dds files
             for root, _, files_in_dir in os.walk(textures_folder):
                 for found_file in files_in_dir:
@@ -150,14 +186,14 @@ class CBB_OT_ImportMSH(Operator, ImportHelper):
                     if found_file_stem.casefold() == target_filename_stem_lower:
                         if found_file_ext.casefold() == ".dds":
                             full_texture_path = os.path.join(root, found_file)
-                            
+
                             # Analyze BEFORE loading into Blender
                             try:
                                 alpha_analysis = texture_utils.analyze_dds_alpha(full_texture_path)
                             except Exception as e:
                                 print(f"    Warning: Alpha analysis failed: {e}")
                                 alpha_analysis = {'mode': 'BLEND', 'threshold': 0.5, 'has_alpha': False}
-                            
+
                             # Now load the texture
                             try:
                                 print(f"    Attempt succeeded: texture loaded from loose file in disk.")
@@ -170,7 +206,7 @@ class CBB_OT_ImportMSH(Operator, ImportHelper):
                                 self.report({"ERROR"}, f"Unexpected error loading loose texture '{full_texture_path}': {e}")
                                 traceback.print_exc()
                                 return None, None
-            
+
             # List all .rfs files in the textures folder
             rfs_files = [file for file in os.listdir(textures_folder) if file.casefold().endswith('.rfs')]
 
@@ -231,20 +267,32 @@ class CBB_OT_ImportMSH(Operator, ImportHelper):
                     traceback.print_exc()
                     return None, None
             
-        # If no texture found yet, search in the mesh file path for ANY matching file name. This logic can find even .png or other texture formats
-        
+        # If no texture found yet, search in the mesh file path for ANY matching file name.
+        # This can find even .png or other texture formats, but is limited by depth.
         search_dir = mesh_file_path
-        print(f"    Fallback: Searching in {search_dir} for ANY match for {target_filename_stem}")
-        
-        for root, _, files_in_dir in os.walk(search_dir):
+
+        # Safety guard: never walk from the filesystem root
+        if os.path.normpath(search_dir) == FS_ROOT:
+            print(f"    Fallback: search_dir resolved to filesystem root, skipping broad scan.")
+            return None, None
+
+        MAX_FALLBACK_DEPTH = 4
+        print(f"    Fallback: Searching in {search_dir} (max depth {MAX_FALLBACK_DEPTH}) for ANY match for {target_filename_stem}")
+
+        for root, dirs, files_in_dir in os.walk(search_dir):
+            # Enforce depth limit to avoid massive scans
+            depth = root[len(search_dir):].count(os.sep)
+            if depth >= MAX_FALLBACK_DEPTH:
+                dirs[:] = []  # stop descending further
+                continue
+
             for found_file in files_in_dir:
                 found_file_stem, found_file_ext = os.path.splitext(found_file)
                 if found_file_stem.casefold() == target_filename_stem_lower:
                     # Found a match with ANY extension
                     full_texture_path = os.path.join(root, found_file)
-                    
-                    # Try to analyze/load
-                    # If it's DDS, do analysis
+
+                    # If it's DDS, analyze alpha; otherwise assume opaque
                     if found_file_ext.casefold() == ".dds":
                         try:
                             alpha_analysis = texture_utils.analyze_dds_alpha(full_texture_path)
@@ -263,7 +311,6 @@ class CBB_OT_ImportMSH(Operator, ImportHelper):
                         self.report({"WARNING"}, f"Found fallback texture '{full_texture_path}' but failed to load: {e}")
                     except Exception as e:
                         print(f"    Error loading fallback texture '{full_texture_path}': {e}")
-
 
         return None, None
     
@@ -1290,6 +1337,22 @@ class CBB_OT_ExportMSH(Operator, ExportHelper):
                                         )
                             
                             
+                        elif object.type == "EMPTY":
+                            __add_object_data(
+                                object_amount,
+                                object_name,
+                                object_parent_name,
+                                object_world_matrix,
+                                object_local_matrix,
+                                [],  # no vertices
+                                [],  # no normals
+                                [],  # no uvs
+                                [],  # no polygons
+                                [],  # no weights
+                                [],  # no bones
+                                "",  # no texture
+                                ""   # no effect
+                            )
                         
                 except Exception as e:
                     msg_handler.report("ERROR", f"Exception while trying to remap vertices for object [{object.name}]: {e}")

@@ -4,7 +4,6 @@ from bpy_extras.io_utils import ImportHelper, ExportHelper
 from bpy.types import Context, Event, Operator, Action
 from bpy.props import CollectionProperty, StringProperty, BoolProperty
 from bpy_extras.io_utils import ImportHelper
-import ntpath
 import mathutils
 import math
 import traceback
@@ -210,6 +209,10 @@ class CBB_OT_ImportAni(Operator, ImportHelper):
                         if obj.animation_data is None:
                             obj.animation_data_create()
                         obj.animation_data.action = action
+                        
+                        # ANI format stores quaternion rotations, so ensure the object
+                        # is in quaternion rotation mode for keyframes to take effect
+                        obj.rotation_mode = 'QUATERNION'
                         
                         # Keyframe the object - these keyframes go into this object's slot
                         # No data path pollution because each object has its own slot
