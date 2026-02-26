@@ -594,8 +594,8 @@ class CBB_OT_ExportAni(Operator, ExportHelper):
                     
                     for mat_idx in sorted_mat_indices:
                         indices_count = material_polygon_counts[mat_idx]
-                        sub_object_base_name = f"{object_name}_{mat_idx}"
-                        
+                        sub_object_base_name = object_name if mat_idx == 0 else f"{object_name}_{mat_idx}"
+
                         if indices_count <= 65535:
                             add_object_animation_data(sub_object_base_name, total_frames, total_export_frames, temp_rotation_keyframes, temp_position_keyframes, temp_scale_keyframes)
                         else:
@@ -603,7 +603,7 @@ class CBB_OT_ExportAni(Operator, ExportHelper):
                             maximum_split_amount = math.ceil(indices_count / 65535.0)
                             
                             for split_number in range(0, maximum_split_amount):
-                                split_object_name = f"{sub_object_base_name}_{split_number}"
+                                split_object_name = sub_object_base_name if split_number == 0 else f"{sub_object_base_name}_{split_number}"
                                 add_object_animation_data(split_object_name, total_frames, total_export_frames, temp_rotation_keyframes, temp_position_keyframes, temp_scale_keyframes)
                 elif object.type == "EMPTY":
                     # EMPTY objects export normally without splitting

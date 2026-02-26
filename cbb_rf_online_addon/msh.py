@@ -706,6 +706,7 @@ class CBB_OT_ImportMSH(Operator, ImportHelper):
                                 obj = bpy.data.objects.new(object_name, mesh)
                                 
                                 obj.matrix_world = object_world_matrix
+                                obj["msh_bind_matrix"] = [v for row in object_world_matrix for v in row]
                                 new_collection.objects.link(obj)
                                 created_objects.append(obj)
                                 
@@ -1077,17 +1078,40 @@ class CBB_OT_ExportMSH(Operator, ExportHelper):
                             if object.parent_type == "BONE":
                                 object_parent_name = object.parent_bone
                                 bone = object.parent.pose.bones[object.parent_bone]
-                                # If the parent is a bone, object.parent refers to the armature itself, so we need to transform the bone matrix relative to the armature for the correct world matrix of the bone
-                                parent_matrix = object.parent.matrix_basis @ bone.matrix
+                                parent_matrix = object.parent.matrix_world @ bone.matrix
                             else:
-                                object_parent_name= object.parent.name
-                                parent_matrix = object.parent.matrix_basis
+                                object_parent_name = object.parent.name
+                                parent_matrix = object.parent.matrix_world
                         else:
-                            parent_matrix = object.matrix_basis
                             object_parent_name = SkeletonData.INVALID_NAME
+                            parent_matrix = None
                         
-                        object_world_matrix = object.matrix_basis
-                        object_local_matrix = parent_matrix.inverted() @ object.matrix_basis
+                        if "msh_bind_matrix" in object:
+                            # Priority: use the explicitly stored bind matrix directly.
+                            # Since after import/operator matrix_basis == msh_bind_matrix,
+                            # this is always the correct world-space bind transform.
+                            raw = object["msh_bind_matrix"]
+                            object_world_matrix = Matrix([raw[i*4:(i+1)*4] for i in range(4)])
+                        else:
+                            # Fallback: jump to frame 0 with armatures in rest pose,
+                            # sample the world matrix there, then restore state.
+                            old_frame = bpy.context.scene.frame_current
+                            old_pose_positions = {}
+                            for arm in bpy.data.objects:
+                                if arm.type == "ARMATURE":
+                                    old_pose_positions[arm] = arm.data.pose_position
+                                    arm.data.pose_position = 'REST'
+                            bpy.context.scene.frame_set(0)
+                            bpy.context.view_layer.update()
+                            
+                            object_world_matrix = object.matrix_world.copy()
+                            
+                            bpy.context.scene.frame_set(old_frame)
+                            for arm, pose_pos in old_pose_positions.items():
+                                arm.data.pose_position = pose_pos
+                            bpy.context.view_layer.update()
+                        
+                        object_local_matrix = (parent_matrix.inverted() @ object_world_matrix) if parent_matrix else object_world_matrix
                         
                         material = None
                         
@@ -1261,7 +1285,7 @@ class CBB_OT_ExportMSH(Operator, ExportHelper):
                                 # e.g. "MyMesh_0", "MyMesh_1" if using mat index, 
                                 # BUT we might already have _0 from original splitting logic. 
                                 # Safe bet: {object_name}_{mat_idx}
-                                sub_object_base_name = f"{object_name}_{mat_idx}"
+                                sub_object_base_name = object_name if mat_idx == 0 else f"{object_name}_{mat_idx}"
                                 
                                 msg_handler.debug_print(f"Material Group {mat_idx}: {len(group_exporter_vertices)} verts, {len(group_exporter_polygons)} polys")
 
@@ -1288,7 +1312,7 @@ class CBB_OT_ExportMSH(Operator, ExportHelper):
                                     maximum_split_amount = math.ceil(polygon_indices_amount / 65535.0)
                                     
                                     for split_number in range(0, maximum_split_amount):
-                                        split_object_name = f"{sub_object_base_name}_{split_number}"
+                                        split_object_name = sub_object_base_name if split_number == 0 else f"{sub_object_base_name}_{split_number}"
                                         
                                         split_exporter_vertices = []
                                         split_exporter_normals = []
@@ -1451,6 +1475,85 @@ class CBB_OT_ExportMSH(Operator, ExportHelper):
 
         return {"FINISHED"}
 
+class CBB_OT_SetBindPose(Operator):
+    bl_idname = "cbb.set_bind_pose"
+    bl_label = "Set MSH Bind Pose"
+    bl_description = (
+        "Stores the current world matrix of selected objects as their MSH bind pose. "
+        "Also recalculates matrix_parent_inverse so that matrix_basis equals the stored "
+        "world matrix. Any existing animations on these objects will be affected."
+    )
+    bl_options = {"REGISTER", "UNDO"}
+
+    @classmethod
+    def poll(cls, context):
+        return any(obj.type in {"MESH", "EMPTY"} for obj in context.selected_objects)
+
+    def execute(self, context):
+        count = 0
+        for obj in context.selected_objects:
+            if obj.type not in {"MESH", "EMPTY"}:
+                continue
+            
+            # Capture current world matrix
+            current_world = obj.matrix_world.copy()
+            
+            # Store it as the bind matrix
+            obj["msh_bind_matrix"] = [v for row in current_world for v in row]
+            
+            # Recalculate matrix_parent_inverse to cancel parent contribution
+            if obj.parent:
+                if obj.parent_type == "BONE" and obj.parent_bone:
+                    pose_bone = obj.parent.pose.bones[obj.parent_bone]
+                    effective_parent_world = obj.parent.matrix_world @ pose_bone.matrix
+                    vec = pose_bone.head - pose_bone.tail
+                    trans = Matrix.Translation(vec)
+                    obj.matrix_parent_inverse = effective_parent_world.inverted_safe() @ trans
+                else:
+                    effective_parent_world = obj.parent.matrix_world
+                    obj.matrix_parent_inverse = effective_parent_world.inverted()
+            else:
+                obj.matrix_parent_inverse = Matrix.Identity(4)
+            
+            # Push the stored world matrix into matrix_basis
+            # so the object stays visually in place
+            obj.matrix_basis = current_world
+            
+            count += 1
+        
+        self.report({"INFO"}, f"Bind pose set for {count} object(s).")
+        return {"FINISHED"}
+
+
+class CBB_OT_ClearBindPose(Operator):
+    bl_idname = "cbb.clear_bind_pose"
+    bl_label = "Clear MSH Bind Pose"
+    bl_description = (
+        "Removes the stored MSH bind pose from selected objects. "
+        "Export will fall back to sampling the world matrix at frame 0."
+    )
+    bl_options = {"REGISTER", "UNDO"}
+
+    @classmethod
+    def poll(cls, context):
+        return any("msh_bind_matrix" in obj for obj in context.selected_objects)
+
+    def execute(self, context):
+        count = 0
+        for obj in context.selected_objects:
+            if "msh_bind_matrix" in obj:
+                del obj["msh_bind_matrix"]
+                count += 1
+        self.report({"INFO"}, f"Bind pose cleared for {count} object(s).")
+        return {"FINISHED"}
+
+
+def menu_func_bind_pose(self, context):
+    self.layout.separator()
+    self.layout.operator(CBB_OT_SetBindPose.bl_idname)
+    self.layout.operator(CBB_OT_ClearBindPose.bl_idname)
+
+
 def menu_func_import(self, context):
     self.layout.operator(CBB_OT_ImportMSH.bl_idname, text="MSH (.msh)")
 
@@ -1461,15 +1564,21 @@ def register():
     bpy.utils.register_class(CBB_OT_ImportMSH)
     bpy.utils.register_class(CBB_FH_ImportMSH)
     bpy.utils.register_class(CBB_OT_ExportMSH)
+    bpy.utils.register_class(CBB_OT_SetBindPose)
+    bpy.utils.register_class(CBB_OT_ClearBindPose)
     bpy.types.TOPBAR_MT_file_import.append(menu_func_import)
     bpy.types.TOPBAR_MT_file_export.append(menu_func_export)
+    bpy.types.VIEW3D_MT_object_context_menu.append(menu_func_bind_pose)
 
 def unregister():
     bpy.utils.unregister_class(CBB_OT_ImportMSH)
     bpy.utils.unregister_class(CBB_FH_ImportMSH)
     bpy.utils.unregister_class(CBB_OT_ExportMSH)
+    bpy.utils.unregister_class(CBB_OT_SetBindPose)
+    bpy.utils.unregister_class(CBB_OT_ClearBindPose)
     bpy.types.TOPBAR_MT_file_import.remove(menu_func_import)
-    bpy.types.TOPBAR_MT_file_import.remove(menu_func_export)
+    bpy.types.TOPBAR_MT_file_export.remove(menu_func_export)
+    bpy.types.VIEW3D_MT_object_context_menu.remove(menu_func_bind_pose)
 
 if __name__ == "__main__":
     register()
